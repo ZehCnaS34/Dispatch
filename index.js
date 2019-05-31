@@ -4,32 +4,44 @@ const path = require("path");
 const rimraf = require("rimraf");
 const http2 = require("http2");
 
-const server = http2.createServer();
-
-server.on("error", error => {
-  console.error(error);
-});
-
-server.on("stream", async (stream, headers) => {
-  try {
-    const { method, args } = JSON.parse(headers.payload);
-    console.log({method, args});
-    const result = await COMMANDS[method](...args);
-    stream.respond({
-      "content-type": "application/json",
-      ":status": 200
-    });
-    stream.end(JSON.stringify(result));
-  } catch (error) {
-    stream.respond({
-      "content-type": "application/json",
-      ":status": 500
-    });
-    stream.end(JSON.stringify(false));
+class CommandServer {
+  constructor() {
+    this.commands = {};
   }
-});
 
-server.listen(8080);
+  register(cmd, handler) {
+    this.commands[cmd] = handler;
+  }
+
+  start() {
+    const server = http2.createServer();
+
+    server.on("error", error => {
+      console.error(error);
+    });
+
+    server.on("stream", async (stream, headers) => {
+      try {
+        const { method, args } = JSON.parse(headers.payload);
+        console.log({ method, args });
+        const result = await this.commands[method](...args);
+        stream.respond({
+          "content-type": "application/json",
+          ":status": 200
+        });
+        stream.end(JSON.stringify(result));
+      } catch (error) {
+        stream.respond({
+          "content-type": "application/json",
+          ":status": 500
+        });
+        stream.end(JSON.stringify(false));
+      }
+    });
+
+    server.listen(8080);
+  }
+}
 
 const throwBool = fn => {
   try {
@@ -44,31 +56,6 @@ const throwBool = fn => {
 const PATHS = {
   get cwd() {
     return process.cwd();
-  }
-};
-
-const COMMANDS = {
-  async ls() {
-    return fs.readdirSync(PATHS.cwd);
-  },
-  async commands() {
-    return Object.keys(COMMANDS);
-  },
-  async mkdir(dir) {
-    fs.mkdirSync(path.resolve(PATHS.cwd, dir));
-    return true;
-  },
-  async rm(relativePath) {
-    return throwBool(() => {
-      rimraf.sync(path.resolve(PATHS.cwd, relativePath));
-    });
-  },
-  async cat(...files) {
-    fs.readfileSync();
-  },
-  async cd(pth) {
-    console.log({ pth });
-    return throwBool(() => process.chdir(path.resolve(PATHS.cwd, pth)));
   }
 };
 
@@ -122,7 +109,7 @@ class REPL {
       const result = await this.request(method, ...args);
       console.log(result);
     } catch (erro) {
-      console.log(`Could not run command ${method}`);
+      console.log(`Failed to run ${method}`);
     }
     setTimeout(this.run.bind(this), 0);
   }
@@ -136,3 +123,53 @@ const connect = () => {
 };
 
 connect();
+
+const s = new CommandServer();
+
+s.register("ls", async (pth = ".") => {
+  return fs.readdirSync(path.resolve(PATHS.cwd, pth));
+});
+
+s.register("commands", async () => {
+  return Object.keys(s.commands);
+});
+
+s.register("mkdir", async dir => {
+  fs.mkdirSync(path.resolve(PATHS.cwd, dir));
+  return true;
+});
+
+s.register("rm", async relativePath => {
+  return throwBool(() => {
+    rimraf.sync(path.resolve(PATHS.cwd, relativePath));
+  });
+});
+
+s.register("touch", async (...files) => {
+  try {
+    for (const file of files) {
+      fs.writeFileSync(path.resolve(PATHS.cwd, file));
+    }
+  } catch (error) {
+    return false;
+  }
+  return true;
+});
+
+s.register("cd", async pth => {
+  console.log({ pth });
+  return throwBool(() => process.chdir(path.resolve(PATHS.cwd, pth)));
+});
+
+s.register("add", async (...nums) => {
+  return nums.reduce((total, n) => total + parseFloat(n), 0);
+})
+
+s.register("pipe", async () => {});
+
+s.register("alias", async (alias, command) => {
+  s.register(alias, s.commands[command]);
+  return true;
+});
+
+s.start();
